@@ -136,10 +136,10 @@ class TaggableManager(RelatedField, Field):
         defaults.update(kwargs)
         return form_class(**defaults)
 
-    def value_from_object(self, instance):
+    def value_from_object(self, instance, using='default'):
         if instance.pk:
-            return self.through.objects.filter(**self.through.lookup_kwargs(instance))
-        return self.through.objects.none()
+            return self.through.objects.using(using).filter(**self.through.db_manager('back').lookup_kwargs(instance))
+        return self.through.objects.using(using).none()
 
     def related_query_name(self):
         return _model_name(self.model)
@@ -171,29 +171,32 @@ class TaggableManager(RelatedField, Field):
         return []
 
     def extra_filters(self, pieces, pos, negate):
+        # TODO: how to get the db
+        using = 'back'
+
         if negate or not self.use_gfk:
             return []
-        prefix = "__".join(["tagged_items"] + pieces[:pos-2])
-        get = ContentType.objects.get_for_model
+        prefix = "__".join(["tagged_items"] + pieces[:pos - 2])
+        get = ContentType.objects.db_manager(using).get_for_model
         cts = [get(obj) for obj in _get_subclasses(self.model)]
         if len(cts) == 1:
             return [("%s__content_type" % prefix, cts[0])]
         return [("%s__content_type__in" % prefix, cts)]
 
-    def get_extra_join_sql(self, connection, qn, lhs_alias, rhs_alias):
+    def get_extra_join_sql(self, connection, qn, lhs_alias, rhs_alias, using='default'):
         model_name = _model_name(self.through)
         if rhs_alias == '%s_%s' % (self.through._meta.app_label, model_name):
             alias_to_join = rhs_alias
         else:
             alias_to_join = lhs_alias
         extra_col = self.through._meta.get_field_by_name('content_type')[0].column
-        content_type_ids = [ContentType.objects.get_for_model(subclass).pk for subclass in _get_subclasses(self.model)]
+        content_type_ids = [ContentType.objects.db_manager(using).get_for_model(subclass).pk for subclass in _get_subclasses(self.model)]
         if len(content_type_ids) == 1:
             content_type_id = content_type_ids[0]
             extra_where = " AND %s.%s = %%s" % (qn(alias_to_join), qn(extra_col))
             params = [content_type_id]
         else:
-            extra_where = " AND %s.%s IN (%s)" % (qn(alias_to_join), qn(extra_col), ','.join(['%s']*len(content_type_ids)))
+            extra_where = " AND %s.%s IN (%s)" % (qn(alias_to_join), qn(extra_col), ','.join(['%s'] * len(content_type_ids)))
             params = content_type_ids
         return extra_where, params
 
@@ -292,9 +295,9 @@ class TaggableManager(RelatedField, Field):
         else:
             return (("object_id", "id"),)
 
-    def get_extra_restriction(self, where_class, alias, related_alias):
+    def get_extra_restriction(self, where_class, alias, related_alias, using='default'):
         extra_col = self.through._meta.get_field_by_name('content_type')[0].column
-        content_type_ids = [ContentType.objects.get_for_model(subclass).pk
+        content_type_ids = [ContentType.objects.db_manager(using).get_for_model(subclass).pk
                             for subclass in _get_subclasses(self.model)]
         return ExtraJoinRestriction(related_alias, extra_col, content_type_ids)
 
@@ -328,6 +331,7 @@ class _TaggableManager(models.Manager):
 
     @require_instance_manager
     def add(self, *tags):
+        using = self.instance._state.db
         str_tags = set([
             t
             for t in tags
@@ -336,16 +340,16 @@ class _TaggableManager(models.Manager):
         tag_objs = set(tags) - str_tags
         # If str_tags has 0 elements Django actually optimizes that to not do a
         # query.  Malcolm is very smart.
-        existing = self.through.tag_model().objects.filter(
+        existing = self.through.tag_model().objects.using(using).filter(
             name__in=str_tags
         )
         tag_objs.update(existing)
 
         for new_tag in str_tags - set(t.name for t in existing):
-            tag_objs.add(self.through.tag_model().objects.create(name=new_tag))
+            tag_objs.add(self.through.tag_model().objects.db_manager(using).create(name=new_tag))
 
         for tag in tag_objs:
-            self.through.objects.get_or_create(tag=tag, **self._lookup_kwargs())
+            self.through.objects.db_manager(using).get_or_create(tag=tag, **self._lookup_kwargs())
 
     @require_instance_manager
     def names(self):
@@ -362,12 +366,14 @@ class _TaggableManager(models.Manager):
 
     @require_instance_manager
     def remove(self, *tags):
-        self.through.objects.filter(**self._lookup_kwargs()).filter(
+        using = self.instance._state.db
+        self.through.objects.using(using).filter(**self._lookup_kwargs()).filter(
             tag__name__in=tags).delete()
 
     @require_instance_manager
     def clear(self):
-        self.through.objects.filter(**self._lookup_kwargs()).delete()
+        using = self.instance._state.db
+        self.through.objects.using(using).filter(**self._lookup_kwargs()).delete()
 
     def most_common(self):
         return self.get_query_set().annotate(
@@ -376,9 +382,11 @@ class _TaggableManager(models.Manager):
 
     @require_instance_manager
     def similar_objects(self):
+        using = self.instance._state.db
+        print "using ", using, "similar_objects"
         lookup_kwargs = self._lookup_kwargs()
         lookup_keys = sorted(lookup_kwargs)
-        qs = self.through.objects.values(*six.iterkeys(lookup_kwargs))
+        qs = self.through.objects.using(using).values(*six.iterkeys(lookup_kwargs))
         qs = qs.annotate(n=models.Count('pk'))
         qs = qs.exclude(**lookup_kwargs)
         qs = qs.filter(tag__in=self.all())
@@ -402,7 +410,7 @@ class _TaggableManager(models.Manager):
                 preload[result["content_type"]].add(result["object_id"])
 
             for ct, obj_ids in preload.items():
-                ct = ContentType.objects.get_for_id(ct)
+                ct = ContentType.objects.db_manager(using).get_for_id(ct)
                 for obj in ct.model_class()._default_manager.filter(pk__in=obj_ids):
                     items[(ct.pk, obj.pk)] = obj
 

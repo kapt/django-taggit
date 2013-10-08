@@ -99,11 +99,12 @@ class TaggedItemBase(ItemBase):
 
     @classmethod
     def tags_for(cls, model, instance=None):
+        using = instance._state.db
         if instance is not None:
-            return cls.tag_model().objects.filter(**{
+            return cls.tag_model().objects.using(using).filter(**{
                 '%s__content_object' % cls.tag_relname(): instance
             })
-        return cls.tag_model().objects.filter(**{
+        return cls.tag_model().objects.using(using).filter(**{
             '%s__content_object__isnull' % cls.tag_relname(): False
         }).distinct()
 
@@ -118,39 +119,50 @@ class GenericTaggedItemBase(ItemBase):
     content_object = GenericForeignKey()
 
     class Meta:
-        abstract=True
+        abstract = True
 
     @classmethod
     def lookup_kwargs(cls, instance):
+        using = instance._state.db
+        print "using ", using, "lookup_kwargs"
         return {
             'object_id': instance.pk,
-            'content_type': ContentType.objects.get_for_model(instance)
+            'content_type': ContentType.objects.db_manager(using).get_for_model(instance)
         }
 
     @classmethod
     def bulk_lookup_kwargs(cls, instances):
+        try:
+            using = instances[0]._state.db
+        except IndexError:
+            using = 'default'
+
+        print "using ", using, "bulk_lookup_kwargs"
+
         if isinstance(instances, QuerySet):
             # Can do a real object_id IN (SELECT ..) query.
             return {
                 "object_id__in": instances,
-                "content_type": ContentType.objects.get_for_model(instances.model),
+                "content_type": ContentType.objects.db_manager(using).get_for_model(instances.model),
             }
         else:
             # TODO: instances[0], can we assume there are instances.
             return {
                 "object_id__in": [instance.pk for instance in instances],
-                "content_type": ContentType.objects.get_for_model(instances[0]),
+                "content_type": ContentType.objects.db_manager(using).get_for_model(instances[0]),
             }
 
     @classmethod
     def tags_for(cls, model, instance=None):
-        ct = ContentType.objects.get_for_model(model)
+        using = instance._state.db
+        print "using ", using, "tags_for"
+        ct = ContentType.objects.db_manager(using).get_for_model(model)
         kwargs = {
             "%s__content_type" % cls.tag_relname(): ct
         }
         if instance is not None:
             kwargs["%s__object_id" % cls.tag_relname()] = instance.pk
-        return cls.tag_model().objects.filter(**kwargs).distinct()
+        return cls.tag_model().objects.using(using).filter(**kwargs).distinct()
 
 
 class TaggedItem(GenericTaggedItemBase, TaggedItemBase):
