@@ -124,7 +124,6 @@ class GenericTaggedItemBase(ItemBase):
     @classmethod
     def lookup_kwargs(cls, instance):
         using = instance._state.db
-        print "using ", using, "lookup_kwargs"
         return {
             'object_id': instance.pk,
             'content_type': ContentType.objects.db_manager(using).get_for_model(instance)
@@ -136,8 +135,6 @@ class GenericTaggedItemBase(ItemBase):
             using = instances[0]._state.db
         except IndexError:
             using = 'default'
-
-        print "using ", using, "bulk_lookup_kwargs"
 
         if isinstance(instances, QuerySet):
             # Can do a real object_id IN (SELECT ..) query.
@@ -155,7 +152,6 @@ class GenericTaggedItemBase(ItemBase):
     @classmethod
     def tags_for(cls, model, instance=None):
         using = instance._state.db
-        print "using ", using, "tags_for"
         ct = ContentType.objects.db_manager(using).get_for_model(model)
         kwargs = {
             "%s__content_type" % cls.tag_relname(): ct
